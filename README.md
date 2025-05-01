@@ -42,3 +42,10 @@ This branch sets up the OpenAI Chat Completion Integration
 - Adding the chat completion handler 
 - Integrating the call to the handler to the prompt message
 - Create a simple SPI Text Message to send to the Web Socket for TTS
+
+`cr-3-streaming`
+This branch sets up streaming from Chat completions and handles them
+- Set stream to true in the completions API call
+- Iterated through tokenized results from the stream
+- Send each token to TTS
+- Finalize when the stream is finished

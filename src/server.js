@@ -45,13 +45,6 @@ Do not include emojis in your responses. Do not include bullet points, asterisks
 
 // Setup the LLM to handle completions
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const completion = async (messages) => {
-  let completion = await openai.chat.completions.create({
-    model: OPEN_AI_MODEL,
-    messages: messages,
-  });
-  return completion.choices[0].message.content; 
-}
 
 // // Setup the route for TwiML and output the request for debugging
 fastify.post("/twiml", async (request, reply) => {
@@ -93,19 +86,52 @@ fastify.register(async function (fastify) {
 
                     // add the voice prompt to the messages
                     messages.push({ role: "user", content: message.voicePrompt})
-                    const response = await completion(messages)
-                    messages.push({ role: "assistant", content: response })
 
-                    // create a simple SPI text Message
+                    let reply = "";
+
+                    const stream = await openai.chat.completions.create({
+                        model: OPEN_AI_MODEL,
+                        messages: messages,
+                        stream: true,
+                    });
+
+                    // iterate through the stream in chunks
+                    for await (const chunk of stream){
+                        
+                        // if there is a token get it
+                        const token = chunk.choices?.[0].delta.content;
+                        if(token){
+                            reply += token;
+                        }
+
+                        // construct a simple SPI message
+                        const tts = {
+                            type: "text",
+                            token: token,
+                            last: false,
+                        }
+
+                        // send the SPI message to TTS
+                        ws.send(
+                            JSON.stringify(tts)
+                        )
+                        console.log(`RESPONSE -> ${JSON.stringify(tts, null, 2)}`)
+                    }
+
+                    // add the full text to the session
+                    messages.push({ role: "assistant", content: reply })
+
+                    // send the final message
                     const tts = {
                         type: "text",
-                        token: response,
+                        token: "",
                         last: true,
                     }
                     ws.send(
                         JSON.stringify(tts)
                     )
                     console.log(`RESPONSE -> ${JSON.stringify(tts, null, 2)}`)
+                    console.log(`RESPONSE -> ${reply}`)
                     break;
                 case "interrupt":
                     console.log(`Interrupt`);
