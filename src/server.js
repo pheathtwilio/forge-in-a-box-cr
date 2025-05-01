@@ -24,12 +24,15 @@ const OPEN_AI_MODEL = "gpt-4o-mini"
 // Setup Welcome Greeting
 const WELCOME_GREETING = `Hi! I am a voice assistant powered by Twilio and Open AI. Ask me anything!`;
 
+// Setup the Interrupt Variable
+const INTERRUPT="any"
+
 // Create the TwiML
 const TWIML = 
 `<?xml version="1.0" encoding="UTF-8"?>
  <Response>
     <Connect>
-        <ConversationRelay url="${WS_URL}" welcomeGreeting="${WELCOME_GREETING}" />
+        <ConversationRelay url="${WS_URL}" welcomeGreeting="${WELCOME_GREETING}" interruptible="${INTERRUPT}" />
     </Connect>
  </Response>
 `
@@ -115,7 +118,7 @@ fastify.register(async function (fastify) {
                         ws.send(
                             JSON.stringify(tts)
                         )
-                        console.log(`RESPONSE -> ${JSON.stringify(tts, null, 2)}`)
+                        // console.log(`RESPONSE -> ${JSON.stringify(tts, null, 2)}`)
                     }
 
                     // add the full text to the session
@@ -134,7 +137,17 @@ fastify.register(async function (fastify) {
                     console.log(`RESPONSE -> ${reply}`)
                     break;
                 case "interrupt":
-                    console.log(`Interrupt`);
+
+                    // in the case of an interrupt construct a final message token
+                    const interrupt = {
+                        type: "text",
+                        token: "",
+                        last: true, 
+                    }
+                    ws.send(
+                        JSON.stringify(interrupt)
+                    )
+                    console.log(`INTERRUPT -> ${JSON.stringify(interrupt, null , 2)}`)
                     break;
                 default:
                     console.warn("Unknown message type received:", message.type);

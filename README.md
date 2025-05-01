@@ -49,3 +49,9 @@ This branch sets up streaming from Chat completions and handles them
 - Iterated through tokenized results from the stream
 - Send each token to TTS
 - Finalize when the stream is finished
+
+`cr-4-interrupts`
+This branch sets up simple interrupts 
+- Modifies the TwiML to add the interruptible parameter
+- Updates the interrupt case to send a last text token to TTS
+- Does not handle context yet
