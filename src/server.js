@@ -115,7 +115,7 @@ fastify.register(async function (fastify) {
                     break;
             }
         });
-
+        
         // tidyup on close 
         ws.on("close", () => {
             console.log("WebSocket connection closed");
