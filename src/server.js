@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import fastifyFormbody from "@fastify/formbody";
 import fastifyWs from "@fastify/websocket";
+import OpenAI from "openai"
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -18,6 +19,7 @@ if(!process.env.PORT) throw new Error(`No Port specified in the .env file`)
 const NGROK_DOMAIN = process.env.NGROK_DOMAIN
 const WS_URL = `wss://${NGROK_DOMAIN}/ws`;
 const PORT = process.env.PORT || 8080
+const OPEN_AI_MODEL = "gpt-4o-mini"
 
 // Setup Welcome Greeting
 const WELCOME_GREETING = `Hi! I am a voice assistant powered by Twilio and Open AI. Ask me anything!`;
@@ -31,6 +33,25 @@ const TWIML =
     </Connect>
  </Response>
 `
+// Create a simple sessions handler
+const sessions = new Map();
+
+// Setup the System Prompt
+const SYSTEM_PROMPT = `
+You are a helpful assistant. This conversation is being translated to voice, so answer carefully. 
+When you respond, please spell out all numbers, for example twenty not 20. 
+Do not include emojis in your responses. Do not include bullet points, asterisks, or special symbols.
+`
+
+// Setup the LLM to handle completions
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const completion = async (messages) => {
+  let completion = await openai.chat.completions.create({
+    model: OPEN_AI_MODEL,
+    messages: messages,
+  });
+  return completion.choices[0].message.content; 
+}
 
 // // Setup the route for TwiML and output the request for debugging
 fastify.post("/twiml", async (request, reply) => {
@@ -55,14 +76,36 @@ fastify.register(async function (fastify) {
             const message = JSON.parse(data);
 
             // out the payload to the console
-            console.log(`MESSAGE ${JSON.stringify(message)}`)
+            console.log(`MESSAGE ${JSON.stringify(message, null, 2)}`)
 
             switch (message.type) {
                 case "setup":
-                    console.log(`Setup`)
+                    // get the call sid as the unique identifier to the session
+                    const callSid = message.callSid;
+                    ws.callSid = callSid;
+                    // add the system prompt to the session
+                    sessions.set(callSid, [{ role: "system", content: SYSTEM_PROMPT }])
+                    console.log(`SETUP ${JSON.stringify(sessions.get(ws.callSid), null, 2)}`)
                     break;
                 case "prompt":
-                    console.log(`Prompt Message`)
+                    // get the messages by call sid
+                    const messages = sessions.get(ws.callSid);
+
+                    // add the voice prompt to the messages
+                    messages.push({ role: "user", content: message.voicePrompt})
+                    const response = await completion(messages)
+                    messages.push({ role: "assistant", content: response })
+
+                    // create a simple SPI text Message
+                    const tts = {
+                        type: "text",
+                        token: response,
+                        last: true,
+                    }
+                    ws.send(
+                        JSON.stringify(tts)
+                    )
+                    console.log(`RESPONSE -> ${JSON.stringify(tts, null, 2)}`)
                     break;
                 case "interrupt":
                     console.log(`Interrupt`);

@@ -34,3 +34,11 @@ This branch sets up the base Conversation Relay Configuration
 - interrupt are then defined.
 - The Fastify server is initiated with fastify.listen(PORT)
 
+`cr-2-llm-integration`
+This branch sets up the OpenAI Chat Completion Integration 
+- Adding OpenAI import
+- Adding Session Handler Map Object to track Messages
+- Adding SYSTEM_PROMPT for OpenAI Chat Completions
+- Adding the chat completion handler 
+- Integrating the call to the handler to the prompt message
+- Create a simple SPI Text Message to send to the Web Socket for TTS
