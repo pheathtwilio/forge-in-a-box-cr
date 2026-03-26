@@ -58,22 +58,15 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // POST /context - Store customer context before call is made
 // Returns a temporary sessionId that will be matched to callSid when WebSocket connects
 fastify.post("/context", async (request, reply) => {
-    const { customerId, customerName, policyNumber, policyType, browsingHistory, verificationStatus } = request.body;
+    // Store all context fields sent by the browser
+    const ctx = request.body;
 
     // Create temporary session with pending key
     // Note: In a single-presenter demo, only one pending session exists at a time
-    // For multi-presenter scenarios, consider using a queue or UUID-based matching
     const sessionId = `pending_${Date.now()}`;
 
     sessions.set(sessionId, {
-        context: {
-            customerId,
-            customerName,
-            policyNumber,
-            policyType,
-            browsingHistory,
-            verificationStatus
-        },
+        context: ctx,
         messages: [],
         transcript: [],
         createdAt: Date.now()
@@ -177,19 +170,33 @@ fastify.register(async function (fastify) {
                         systemPrompt += `
 
 CUSTOMER CONTEXT:
-- Name: ${ctx.customerName}
-- Customer ID: ${ctx.customerId}
-- Policy: ${ctx.policyNumber} (${ctx.policyType})
-- Browsing: ${browsingHistoryText}
-- Verification: ${ctx.verificationStatus}
+- Name: ${ctx.customer_name || ctx.customerName}
+- Customer ID: ${ctx.customer_id || ctx.customerId}
+- Phone: ${ctx.phone || 'N/A'}
+- Email: ${ctx.email || 'N/A'}
+- Customer Since: ${ctx.customer_since || 'N/A'}
+
+POLICY DETAILS:
+- Policy Number: ${ctx.policy_number || ctx.policyNumber}
+- Policy Type: ${ctx.policy_type || ctx.policyType}
+- Premium: ${ctx.premium || 'N/A'}
+- Coverage Amount: ${ctx.coverage || 'N/A'}
+- Renewal Date: ${ctx.renewal || 'N/A'}
+- Risk Score: ${ctx.risk_score || 'N/A'}
+- Claims Filed: ${ctx.claim_count ?? 'N/A'}
+${ctx.recent_claims ? '\nRECENT CLAIMS:\n' + ctx.recent_claims.map(c => `- ${c.number}: ${c.date} — ${c.status} ($${c.amount})`).join('\n') : ''}
+
+BROWSING HISTORY: ${browsingHistoryText}
+VERIFICATION STATUS: ${ctx.verificationStatus || ctx.verification_status || 'approved'}
 
 INSTRUCTIONS:
 1. This call is being recorded. The recording notice was already played.
-2. Greet the customer and ask for their name to verify identity.
+2. Greet the customer warmly and ask for their name to verify identity.
 3. Once name confirmed, ask for their policy number.
-4. Once policy verified, ask how you can help them today.
-5. For policy questions, provide information from the context above.
-6. If the customer asks to speak to a human agent, say "I'll transfer you to an agent now" and end the conversation.
+4. Once policy number verified, ask how you can help them today.
+5. You HAVE the customer's policy information above. Use it to answer questions about their policy — premium amount, coverage, renewal date, claims history, etc.
+6. Be helpful and conversational. If asked about policy details, provide the specific numbers from the context.
+7. If the customer asks to speak to a human agent, say "I'll transfer you to an agent now" and end the conversation.
 `;
 
                         console.log(`Context matched for call ${callSid}: ${ctx.customerName} (${ctx.customerId})`);
