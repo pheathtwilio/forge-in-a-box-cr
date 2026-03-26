@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import fastifyFormbody from "@fastify/formbody";
 import fastifyWs from "@fastify/websocket";
+import fastifyCors from "@fastify/cors";
 import OpenAI from "openai"
 import dotenv from "dotenv";
 dotenv.config();
@@ -9,8 +10,12 @@ dotenv.config();
 // x-www-form-urlencoded content
 // and setting up Web Sockets
 const fastify = Fastify();
-fastify.register(fastifyFormbody); 
+fastify.register(fastifyFormbody);
 fastify.register(fastifyWs);
+fastify.register(fastifyCors, {
+    origin: true, // Allow all origins for demo purposes
+    credentials: true
+});
 
 if(!process.env.NGROK_DOMAIN) throw new Error(`No Ngrok Domain has been specified in .env`)
 if(!process.env.PORT) throw new Error(`No Port specified in the .env file`)
@@ -28,7 +33,7 @@ const WELCOME_GREETING = `Hi! I am a voice assistant powered by Twilio and Open 
 const INTERRUPT="any"
 
 // Create the TwiML
-const TWIML = 
+const TWIML =
 `<?xml version="1.0" encoding="UTF-8"?>
  <Response>
     <Connect>
@@ -37,17 +42,83 @@ const TWIML =
  </Response>
 `
 // Create a simple sessions handler
+// Structure: { callSid: { messages: [], transcript: [], context: {}, createdAt: timestamp } }
 const sessions = new Map();
 
 // Setup the System Prompt
 const SYSTEM_PROMPT = `
-You are a helpful assistant. This conversation is being translated to voice, so answer carefully. 
-When you respond, please spell out all numbers, for example twenty not 20. 
+You are a helpful assistant. This conversation is being translated to voice, so answer carefully.
+When you respond, please spell out all numbers, for example twenty not 20.
 Do not include emojis in your responses. Do not include bullet points, asterisks, or special symbols.
 `
 
 // Setup the LLM to handle completions
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// POST /context - Store customer context before call is made
+// Returns a temporary sessionId that will be matched to callSid when WebSocket connects
+fastify.post("/context", async (request, reply) => {
+    const { customerId, customerName, policyNumber, policyType, browsingHistory, verificationStatus } = request.body;
+
+    // Create temporary session with pending key
+    // Note: In a single-presenter demo, only one pending session exists at a time
+    // For multi-presenter scenarios, consider using a queue or UUID-based matching
+    const sessionId = `pending_${Date.now()}`;
+
+    sessions.set(sessionId, {
+        context: {
+            customerId,
+            customerName,
+            policyNumber,
+            policyType,
+            browsingHistory,
+            verificationStatus
+        },
+        messages: [],
+        transcript: [],
+        createdAt: Date.now()
+    });
+
+    console.log(`Context stored for session ${sessionId}:`, { customerId, customerName, policyNumber });
+
+    reply.send({ sessionId, status: 'context_stored' });
+});
+
+// GET /transcript - Retrieve transcript entries since a given index
+fastify.get("/transcript", async (request, reply) => {
+    const { callSid, since } = request.query;
+
+    const session = sessions.get(callSid);
+    if (!session) {
+        return reply.code(404).send({ error: 'Session not found' });
+    }
+
+    const sinceIdx = parseInt(since) || 0;
+    const entries = session.transcript.slice(sinceIdx);
+
+    reply.send({
+        entries,
+        total: session.transcript.length
+    });
+});
+
+// POST /status - Handle call lifecycle events
+fastify.post("/status", async (request, reply) => {
+    const { CallSid, CallStatus } = request.body;
+
+    console.log(`Call ${CallSid} status: ${CallStatus}`);
+
+    // Clean up session 30 seconds after call ends
+    if (CallStatus === 'completed' || CallStatus === 'failed' || CallStatus === 'canceled') {
+        console.log(`Scheduling cleanup for session ${CallSid}`);
+        setTimeout(() => {
+            sessions.delete(CallSid);
+            console.log(`Session ${CallSid} cleaned up`);
+        }, 30000);
+    }
+
+    reply.send({ status: 'ok' });
+});
 
 // // Setup the route for TwiML and output the request for debugging
 fastify.post("/twiml", async (request, reply) => {
@@ -55,7 +126,7 @@ fastify.post("/twiml", async (request, reply) => {
     console.log("Method:", request.method);
     console.log("URL:", request.url);
     console.log("Headers:", request.headers);
-    console.log("Body:", request.body);  
+    console.log("Body:", request.body);
     console.log("========================");
 
     reply.type("text/xml").send(TWIML);
@@ -79,16 +150,91 @@ fastify.register(async function (fastify) {
                     // get the call sid as the unique identifier to the session
                     const callSid = message.callSid;
                     ws.callSid = callSid;
-                    // add the system prompt to the session
-                    sessions.set(callSid, [{ role: "system", content: SYSTEM_PROMPT }])
-                    console.log(`SETUP ${JSON.stringify(sessions.get(ws.callSid), null, 2)}`)
+
+                    // Look for pending context session
+                    // Note: This simple matching works for single-presenter demos
+                    // For multi-presenter scenarios, implement a more robust matching mechanism
+                    let pendingSessionKey = null;
+                    let pendingSession = null;
+
+                    for (const [key, value] of sessions.entries()) {
+                        if (key.startsWith('pending_')) {
+                            pendingSessionKey = key;
+                            pendingSession = value;
+                            break;
+                        }
+                    }
+
+                    // Build system prompt
+                    let systemPrompt = SYSTEM_PROMPT;
+
+                    if (pendingSession && pendingSession.context) {
+                        const ctx = pendingSession.context;
+                        const browsingHistoryText = Array.isArray(ctx.browsingHistory)
+                            ? ctx.browsingHistory.join(' → ')
+                            : ctx.browsingHistory || 'None';
+
+                        systemPrompt += `
+
+CUSTOMER CONTEXT:
+- Name: ${ctx.customerName}
+- Customer ID: ${ctx.customerId}
+- Policy: ${ctx.policyNumber} (${ctx.policyType})
+- Browsing: ${browsingHistoryText}
+- Verification: ${ctx.verificationStatus}
+
+INSTRUCTIONS:
+1. This call is being recorded. The recording notice was already played.
+2. Greet the customer and ask for their name to verify identity.
+3. Once name confirmed, ask for their policy number.
+4. Once policy verified, ask how you can help them today.
+5. For policy questions, provide information from the context above.
+6. If the customer asks to speak to a human agent, say "I'll transfer you to an agent now" and end the conversation.
+`;
+
+                        console.log(`Context matched for call ${callSid}: ${ctx.customerName} (${ctx.customerId})`);
+
+                        // Move session from pending to actual callSid
+                        sessions.set(callSid, {
+                            messages: [{ role: "system", content: systemPrompt }],
+                            transcript: [],
+                            context: ctx,
+                            createdAt: pendingSession.createdAt
+                        });
+
+                        // Delete the pending session
+                        sessions.delete(pendingSessionKey);
+                    } else {
+                        // No context found, use default system prompt
+                        sessions.set(callSid, {
+                            messages: [{ role: "system", content: systemPrompt }],
+                            transcript: [],
+                            context: null,
+                            createdAt: Date.now()
+                        });
+                    }
+
+                    console.log(`SETUP ${JSON.stringify(sessions.get(ws.callSid).messages, null, 2)}`)
                     break;
                 case "prompt":
-                    // get the messages by call sid
-                    const messages = sessions.get(ws.callSid);
+                    // get the session
+                    const session = sessions.get(ws.callSid);
+                    if (!session) {
+                        console.error(`No session found for callSid: ${ws.callSid}`);
+                        break;
+                    }
+
+                    const messages = session.messages;
 
                     // add the voice prompt to the messages
                     messages.push({ role: "user", content: message.voicePrompt})
+
+                    // Record customer speech in transcript
+                    session.transcript.push({
+                        role: 'customer',
+                        content: message.voicePrompt,
+                        timestamp: Date.now()
+                    });
 
                     let reply = "";
 
@@ -100,7 +246,7 @@ fastify.register(async function (fastify) {
 
                     // iterate through the stream in chunks
                     for await (const chunk of stream){
-                        
+
                         // if there is a token get it
                         const token = chunk.choices?.[0].delta.content;
                         if(token){
@@ -124,6 +270,13 @@ fastify.register(async function (fastify) {
                     // add the full text to the session
                     messages.push({ role: "assistant", content: reply })
 
+                    // Record AI response in transcript
+                    session.transcript.push({
+                        role: 'ai',
+                        content: reply,
+                        timestamp: Date.now()
+                    });
+
                     // send the final message
                     const tts = {
                         type: "text",
@@ -142,7 +295,7 @@ fastify.register(async function (fastify) {
                     const interrupt = {
                         type: "text",
                         token: "",
-                        last: true, 
+                        last: true,
                     }
                     ws.send(
                         JSON.stringify(interrupt)
@@ -155,7 +308,7 @@ fastify.register(async function (fastify) {
             }
         });
 
-        // tidyup on close 
+        // tidyup on close
         ws.on("close", () => {
             console.log("WebSocket connection closed");
         });
