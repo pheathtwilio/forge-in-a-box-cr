@@ -32,11 +32,14 @@ const WELCOME_GREETING = `Hi! I am a voice assistant powered by Twilio and Open 
 // Setup the Interrupt Variable
 const INTERRUPT="any"
 
-// Create the TwiML
+// Flex / TaskRouter config
+const FLEX_WORKFLOW_SID = "WWaa740f6c6c725172f6fa3051356f3524";
+
+// Create the TwiML — action URL handles post-CRelay routing (handoff to Flex or hangup)
 const TWIML =
 `<?xml version="1.0" encoding="UTF-8"?>
  <Response>
-    <Connect>
+    <Connect action="${`https://${NGROK_DOMAIN}/handoff`}">
         <ConversationRelay url="${WS_URL}" welcomeGreeting="${WELCOME_GREETING}" interruptible="${INTERRUPT}" />
     </Connect>
  </Response>
@@ -91,7 +94,9 @@ fastify.get("/transcript", async (request, reply) => {
 
     reply.send({
         entries,
-        total: session.transcript.length
+        total: session.transcript.length,
+        callStatus: session.callStatus || 'in-progress',
+        handoff: session.handoff || false
     });
 });
 
@@ -100,6 +105,12 @@ fastify.post("/status", async (request, reply) => {
     const { CallSid, CallStatus } = request.body;
 
     console.log(`Call ${CallSid} status: ${CallStatus}`);
+
+    // Store call status on session so transcript poll can detect completion
+    const session = sessions.get(CallSid);
+    if (session) {
+        session.callStatus = CallStatus;
+    }
 
     // Clean up session 30 seconds after call ends
     if (CallStatus === 'completed' || CallStatus === 'failed' || CallStatus === 'canceled') {
@@ -123,6 +134,59 @@ fastify.post("/twiml", async (request, reply) => {
     console.log("========================");
 
     reply.type("text/xml").send(TWIML);
+});
+
+// POST /handoff - Called by Twilio when ConversationRelay <Connect> ends
+// If session is marked for handoff, enqueue to Flex; otherwise hang up
+fastify.post("/handoff", async (request, reply) => {
+    const { CallSid } = request.body;
+    console.log(`HANDOFF request for call ${CallSid}`);
+
+    const session = sessions.get(CallSid);
+
+    if (session && session.handoff) {
+        const ctx = session.context || {};
+        // Build transcript summary from last few exchanges
+        const recentTranscript = (session.transcript || [])
+            .slice(-6)
+            .map(t => `${t.role}: ${t.content}`)
+            .join(' | ');
+
+        const taskAttributes = JSON.stringify({
+            type: "inbound",
+            name: ctx.customer_name || ctx.customerName || "Unknown",
+            customerName: ctx.customer_name || ctx.customerName || "Unknown",
+            customerPhone: ctx.phone || "",
+            customerId: ctx.customer_id || ctx.customerId || "",
+            email: ctx.email || "",
+            policyNumber: ctx.policy_number || ctx.policyNumber || "",
+            policyType: ctx.policy_type || ctx.policyType || "",
+            premium: ctx.premium || "",
+            coverage: ctx.coverage || "",
+            renewalDate: ctx.renewal || "",
+            riskScore: ctx.risk_score || "",
+            customerSince: ctx.customer_since || "",
+            claims: ctx.recent_claims || [],
+            browsingHistory: ctx.browsingHistory || [],
+            verificationStatus: ctx.verificationStatus || ctx.verification_status || "approved",
+            transcriptSummary: recentTranscript
+        });
+
+        console.log(`HANDOFF -> Enqueuing to Flex with attributes:`, taskAttributes);
+
+        const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">Please hold while I connect you to a specialist.</Say>
+    <Enqueue workflowSid="${FLEX_WORKFLOW_SID}">
+        <Task>${taskAttributes}</Task>
+    </Enqueue>
+</Response>`;
+
+        reply.type("text/xml").send(twiml);
+    } else {
+        console.log(`HANDOFF -> Normal call end, hanging up`);
+        reply.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+    }
 });
 
 // // Register the Web Socket
@@ -197,6 +261,7 @@ INSTRUCTIONS:
 5. You HAVE the customer's policy information above. Use it to answer questions about their policy — premium amount, coverage, renewal date, claims history, etc.
 6. Be helpful and conversational. If asked about policy details, provide the specific numbers from the context.
 7. If the customer asks to speak to a human agent, say "I'll transfer you to an agent now" and end the conversation.
+${ctx.recent_claims ? `8. CLAIMS ESCALATION: If the customer is asking about an active claim (especially one Under Review), acknowledge the claim details you have, but explain that a claims specialist can provide more detailed information and help resolve their issue. Offer to transfer them to a specialist. When they agree, say "I'll transfer you to a claims specialist now who will have all your information."` : ''}
 `;
 
                         console.log(`Context matched for call ${callSid}: ${ctx.customerName} (${ctx.customerId})`);
@@ -282,16 +347,32 @@ INSTRUCTIONS:
                         timestamp: Date.now()
                     });
 
-                    // send the final message
-                    const tts = {
-                        type: "text",
-                        token: "",
-                        last: true,
+                    // Check if the AI wants to transfer to a human agent
+                    const transferPhrases = ["transfer you", "connect you to", "transferring you", "connect you with an agent", "transfer you to an agent"];
+                    const shouldHandoff = transferPhrases.some(phrase => reply.toLowerCase().includes(phrase));
+
+                    if (shouldHandoff) {
+                        console.log(`HANDOFF DETECTED for call ${ws.callSid}`);
+                        session.handoff = true;
+
+                        // Send the final text token, then end the session
+                        ws.send(JSON.stringify({ type: "text", token: "", last: true }));
+
+                        // End the ConversationRelay session — Twilio will POST to action URL
+                        ws.send(JSON.stringify({ type: "end" }));
+                        console.log(`RESPONSE -> HANDOFF END sent`);
+                    } else {
+                        // send the final message
+                        const tts = {
+                            type: "text",
+                            token: "",
+                            last: true,
+                        }
+                        ws.send(
+                            JSON.stringify(tts)
+                        )
+                        console.log(`RESPONSE -> ${JSON.stringify(tts, null, 2)}`)
                     }
-                    ws.send(
-                        JSON.stringify(tts)
-                    )
-                    console.log(`RESPONSE -> ${JSON.stringify(tts, null, 2)}`)
                     console.log(`RESPONSE -> ${reply}`)
                     break;
                 case "interrupt":
