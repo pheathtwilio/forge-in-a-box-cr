@@ -72,7 +72,7 @@ fastify.post("/context", async (request, reply) => {
         createdAt: Date.now()
     });
 
-    console.log(`Context stored for session ${sessionId}:`, { customerId, customerName, policyNumber });
+    console.log(`Context stored for session ${sessionId}:`, ctx.customer_name || ctx.customerName, ctx.policy_number || ctx.policyNumber);
 
     reply.send({ sessionId, status: 'context_stored' });
 });
@@ -260,17 +260,15 @@ INSTRUCTIONS:
                             reply += token;
                         }
 
-                        // construct a simple SPI message
-                        const tts = {
-                            type: "text",
-                            token: token,
-                            last: false,
+                        // Only send if we have a token (skip empty/undefined chunks)
+                        if (token) {
+                            const tts = {
+                                type: "text",
+                                token: token,
+                                last: false,
+                            }
+                            ws.send(JSON.stringify(tts));
                         }
-
-                        // send the SPI message to TTS
-                        ws.send(
-                            JSON.stringify(tts)
-                        )
                         // console.log(`RESPONSE -> ${JSON.stringify(tts, null, 2)}`)
                     }
 
