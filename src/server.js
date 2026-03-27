@@ -17,13 +17,12 @@ fastify.register(fastifyCors, {
     credentials: true
 });
 
-if(!process.env.NGROK_DOMAIN) throw new Error(`No Ngrok Domain has been specified in .env`)
-if(!process.env.PORT) throw new Error(`No Port specified in the .env file`)
+// HOST is the public domain — set by Fly.io (APP_NAME.fly.dev) or NGROK_DOMAIN for local dev
+const HOST = process.env.HOST || process.env.NGROK_DOMAIN;
+if (!HOST) throw new Error('No HOST or NGROK_DOMAIN specified in environment');
 
-// Setup Configuration Options
-const NGROK_DOMAIN = process.env.NGROK_DOMAIN
-const WS_URL = `wss://${NGROK_DOMAIN}/ws`;
-const PORT = process.env.PORT || 8080
+const WS_URL = `wss://${HOST}/ws`;
+const PORT = process.env.PORT || 8080;
 const OPEN_AI_MODEL = "gpt-4o-mini"
 
 // Setup Welcome Greeting
@@ -39,7 +38,7 @@ const FLEX_WORKFLOW_SID = "WWaa740f6c6c725172f6fa3051356f3524";
 const TWIML =
 `<?xml version="1.0" encoding="UTF-8"?>
  <Response>
-    <Connect action="${`https://${NGROK_DOMAIN}/handoff`}">
+    <Connect action="https://${HOST}/handoff">
         <ConversationRelay url="${WS_URL}" welcomeGreeting="${WELCOME_GREETING}" interruptible="${INTERRUPT}" />
     </Connect>
  </Response>
@@ -403,8 +402,8 @@ ${ctx.recent_claims ? `8. CLAIMS ESCALATION: If the customer is asking about an 
 
 
 try {
-    fastify.listen({ port: PORT });
-    console.log(`Server running at http://localhost:${PORT} and wss://${NGROK_DOMAIN}/ws`);
+    await fastify.listen({ port: PORT, host: '0.0.0.0' });
+    console.log(`Server running at http://0.0.0.0:${PORT} — public domain: ${HOST}`);
 } catch (e) {
     fastify.log.error(`Fastify Server Error ${e}`);
     process.exit(1);

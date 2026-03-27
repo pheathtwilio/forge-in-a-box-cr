@@ -2,11 +2,11 @@
   "name": "forge-in-a-box-cr",
   "version": "1.0.0",
   "type": "module",
-  "description": "This repo demonstrates building an interactive voice assistant using Twilio's `<ConversationRelay>` and an OpenAI LLM backend.",
-  "main": "index.js",
+  "description": "Interactive voice assistant using Twilio ConversationRelay and OpenAI",
+  "main": "src/server.js",
   "scripts": {
-    "dev": "nodemon",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/server.js",
+    "dev": "nodemon"
   },
   "repository": {
     "type": "git",
@@ -15,19 +15,15 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/pheathtwilio/forge-in-a-box-cr/issues"
-  },
-  "homepage": "https://github.com/pheathtwilio/forge-in-a-box-cr#readme",
-  "devDependencies": {
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
     "@fastify/formbody": "^8.0.2",
     "@fastify/websocket": "^11.0.2",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
-    "nodemon": "^3.1.10",
     "openai": "^4.86.2"
   },
-  "dependencies": {
-    "@fastify/cors": "^11.2.0"
+  "devDependencies": {
+    "nodemon": "^3.1.10"
   }
 }
