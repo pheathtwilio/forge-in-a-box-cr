@@ -34,11 +34,14 @@ const INTERRUPT="any"
 // Flex / TaskRouter config
 const FLEX_WORKFLOW_SID = "WWaa740f6c6c725172f6fa3051356f3524";
 
-// Create the TwiML — action URL handles post-CRelay routing (handoff to Flex or hangup)
+// Handoff action URL — Twilio Serverless Function (matches blog pattern)
+const HANDOFF_URL = process.env.HANDOFF_URL || "https://sfbli-2271-dev.twil.io/handoff";
+
+// Create the TwiML — action URL points to Twilio Function for reliable TwiML processing
 const TWIML =
 `<?xml version="1.0" encoding="UTF-8"?>
  <Response>
-    <Connect action="https://${HOST}/handoff">
+    <Connect action="${HANDOFF_URL}">
         <ConversationRelay url="${WS_URL}" welcomeGreeting="${WELCOME_GREETING}" interruptible="${INTERRUPT}" />
     </Connect>
  </Response>
@@ -138,12 +141,13 @@ fastify.post("/twiml", async (request, reply) => {
 // POST /handoff - Called by Twilio when ConversationRelay <Connect> ends
 // If session is marked for handoff, enqueue to Flex; otherwise hang up
 fastify.post("/handoff", async (request, reply) => {
-    const { CallSid } = request.body;
-    console.log(`HANDOFF request for call ${CallSid}`);
+    const { CallSid, HandoffData } = request.body;
+    console.log(`HANDOFF request for call ${CallSid}, HandoffData: ${HandoffData ? 'present' : 'absent'}`);
 
     const session = sessions.get(CallSid);
+    const isHandoff = (session && session.handoff) || HandoffData;
 
-    if (session && session.handoff) {
+    if (isHandoff) {
         const ctx = session.context || {};
         // Build transcript summary from last few exchanges
         const recentTranscript = (session.transcript || [])
@@ -354,12 +358,32 @@ ${ctx.recent_claims ? `8. CLAIMS ESCALATION: If the customer is asking about an 
                         console.log(`HANDOFF DETECTED for call ${ws.callSid}`);
                         session.handoff = true;
 
-                        // Send the final text token, then end the session
+                        const ctx = session.context || {};
+                        const recentTranscript = (session.transcript || [])
+                            .slice(-6)
+                            .map(t => `${t.role}: ${t.content}`)
+                            .join(' | ');
+
+                        // Send the final text token
                         ws.send(JSON.stringify({ type: "text", token: "", last: true }));
 
-                        // End the ConversationRelay session — Twilio will POST to action URL
-                        ws.send(JSON.stringify({ type: "end" }));
-                        console.log(`RESPONSE -> HANDOFF END sent`);
+                        // Small delay to let TTS finish before ending session
+                        setTimeout(() => {
+                            // End session with handoffData — matches ConversationRelay blog pattern
+                            // Twilio passes handoffData to the action URL as HandoffData
+                            ws.send(JSON.stringify({
+                                type: "end",
+                                handoffData: JSON.stringify({
+                                    reasonCode: "live-agent-handoff",
+                                    reason: "Customer requested live agent",
+                                    customerName: ctx.customer_name || ctx.customerName || "Unknown",
+                                    customerId: ctx.customer_id || ctx.customerId || "",
+                                    policyNumber: ctx.policy_number || ctx.policyNumber || "",
+                                    transcriptSummary: recentTranscript
+                                })
+                            }));
+                            console.log(`RESPONSE -> HANDOFF END sent with handoffData`);
+                        }, 2000);
                     } else {
                         // send the final message
                         const tts = {
